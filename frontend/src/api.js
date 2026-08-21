@@ -51,7 +51,20 @@ export const api = {
   device: (id) => request(`/devices/${id}`),
   testConnection: (id) => request(`/devices/${id}/test-connection`, { method: 'POST' }),
 
+  fleet: () => request('/monitoring/fleet'),
+  historyOf: (id, minutes = 60) =>
+    request(`/monitoring/devices/${id}/history?minutes=${minutes}`),
+
   resource: (id) => request(`/mikrotik/${id}/resource`),
+  deviceHealth: (id) => request(`/mikrotik/${id}/health`),
+  wan: (id) => request(`/mikrotik/${id}/wan`),
+  updates: (id) => request(`/mikrotik/${id}/updates`),
+  reboot: (id) => request(`/mikrotik/${id}/reboot`, { method: 'POST' }),
+  shutdown: (id, confirmName) =>
+    request(`/mikrotik/${id}/shutdown`, {
+      method: 'POST',
+      body: JSON.stringify({ confirm_name: confirmName }),
+    }),
   routerboard: (id) => request(`/mikrotik/${id}/routerboard`),
   interfaces: (id) => request(`/mikrotik/${id}/interfaces`),
   interfaceTraffic: (id, iface) =>

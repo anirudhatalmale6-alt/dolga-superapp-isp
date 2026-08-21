@@ -61,8 +61,13 @@ class NetworkDevice(Base, TimestampMixin):
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
 
     site: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Interfaz que se grafica como "tráfico hacia la calle". Si se deja vacía se
+    # deduce sola: la que lleva la ruta por defecto activa de menor distancia.
+    wan_interface: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
 
     # Último estado conocido (lo refresca el monitoreo)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -11,9 +11,10 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_current_user, get_mikrotik_client, require_roles
+from app.api.deps import get_current_user, get_device, get_mikrotik_client, require_roles
+from app.models.network import NetworkDevice
 from app.models.user import User, UserRole
-from app.schemas.network import ActionResult, RestoreRequest, SuspendRequest
+from app.schemas.network import ActionResult, RestoreRequest, ShutdownRequest, SuspendRequest
 from app.services.mikrotik.client import MikrotikClient
 from app.services.mikrotik.exceptions import (
     MikrotikAuthError,
@@ -76,6 +77,30 @@ async def interface_traffic(
 @router.get("/ip-addresses", summary="Direcciones IP configuradas")
 async def ip_addresses(svc: MikrotikService = Depends(_svc), _: User = Depends(get_current_user)):
     return await _guard(svc.ip_addresses())
+
+
+@router.get(
+    "/health",
+    summary="Temperatura y voltaje (solo en placas con sensor)",
+    description=(
+        "Devuelve `available: false` cuando el equipo no trae sensor de "
+        "temperatura (RB750Gr3, RB2011, etc). Eso no es un error: es un dato "
+        "que ese hardware no puede entregar, y la interfaz debe mostrar 'n/d' "
+        "en lugar de un número inventado."
+    ),
+)
+async def health(svc: MikrotikService = Depends(_svc), _: User = Depends(get_current_user)):
+    return await _guard(svc.health())
+
+
+@router.get("/wan", summary="Interfaces hacia la calle con IP, gateway y velocidad")
+async def wan(svc: MikrotikService = Depends(_svc), _: User = Depends(get_current_user)):
+    return await _guard(svc.wan_interfaces())
+
+
+@router.get("/snapshot", summary="Lectura compacta del equipo (usada por la tabla de flota)")
+async def snapshot(svc: MikrotikService = Depends(_svc), _: User = Depends(get_current_user)):
+    return await _guard(svc.snapshot())
 
 
 @router.get("/pppoe/active", summary="Sesiones PPPoE activas")
@@ -172,3 +197,66 @@ async def restore(payload: RestoreRequest, svc: MikrotikService = Depends(_svc))
 async def kick(username: str, svc: MikrotikService = Depends(_svc)):
     closed = await _guard(svc.kick_session(username))
     return {"username": username, "session_closed": closed}
+
+
+# ----------------------------------------------------------------- mantenimiento
+
+
+@router.get(
+    "/updates",
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SOPORTE))],
+    summary="Revisar si hay una versión nueva de RouterOS (no instala nada)",
+)
+async def updates(svc: MikrotikService = Depends(_svc)):
+    return await _guard(svc.check_updates())
+
+
+@router.post(
+    "/reboot",
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SOPORTE))],
+    summary="Reiniciar el equipo",
+)
+async def reboot(svc: MikrotikService = Depends(_svc)):
+    await _guard(svc.reboot())
+    return {
+        "action": "reboot",
+        "ok": True,
+        "message": "Reinicio enviado. El equipo vuelve solo en uno o dos minutos.",
+    }
+
+
+@router.post(
+    "/shutdown",
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+    summary="Apagar el equipo (requiere confirmar escribiendo su nombre)",
+    description=(
+        "Apagar un MikroTik remoto significa que NO vuelve solo: hay que ir al "
+        "sitio a darle corriente. Por eso el servidor exige que `confirm_name` "
+        "coincida exactamente con el nombre del equipo; no alcanza con "
+        "confirmar en el navegador."
+    ),
+)
+async def shutdown(
+    payload: ShutdownRequest,
+    device: NetworkDevice = Depends(get_device),
+    svc: MikrotikService = Depends(_svc),
+):
+    # La confirmación se valida en el servidor, no solo en la interfaz: si solo
+    # la revisara el navegador no sería una salvaguarda, sería decoración.
+    if payload.confirm_name.strip() != device.name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Para apagar el equipo hay que escribir su nombre exacto. "
+                f"Se esperaba '{device.name}'."
+            ),
+        )
+    await _guard(svc.shutdown())
+    return {
+        "action": "shutdown",
+        "ok": True,
+        "message": (
+            f"'{device.name}' fue apagado. No volverá solo: requiere corte y "
+            "restitución de corriente en el sitio."
+        ),
+    }

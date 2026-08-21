@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,10 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.base import Base
-from app.db.session import engine
-from app.models import network, user  # noqa: F401  (registra las tablas)
+from app.db.session import AsyncSessionLocal, engine
+from app.models import monitoring as monitoring_models  # noqa: F401  (registra las tablas)
+from app.models import network, user  # noqa: F401
+from app.services.monitoring import monitor_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -21,13 +25,28 @@ async def lifespan(app: FastAPI):
     if settings.ENVIRONMENT == "development":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+    # El monitoreo usa la fábrica de sesiones que esté activa (los tests y el
+    # modo demo la reemplazan por una sobre SQLite).
+    task = None
+    if settings.MONITOR_ENABLED:
+        factory = getattr(app.state, "session_factory", None) or AsyncSessionLocal
+        task = asyncio.create_task(monitor_loop(factory))
+
     yield
+
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="0.1.0",
+    version="0.2.0",
     description=(
         "Backend de D' OLGA SUPERAPP. Toda la comunicación con MikroTik, UISP y "
         "OLT ocurre aquí: el frontend nunca recibe credenciales de los equipos."

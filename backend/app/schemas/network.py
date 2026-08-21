@@ -18,8 +18,13 @@ class DeviceBase(BaseModel):
     api_use_tls: bool = False
     verify_tls: bool = False
     site: Optional[str] = None
+    location: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
+    wan_interface: Optional[str] = Field(
+        default=None,
+        description="Interfaz a graficar como tráfico hacia la calle. Vacío = se deduce sola.",
+    )
 
 
 class DeviceCreate(DeviceBase):
@@ -38,8 +43,10 @@ class DeviceUpdate(BaseModel):
     api_use_tls: Optional[bool] = None
     verify_tls: Optional[bool] = None
     site: Optional[str] = None
+    location: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    wan_interface: Optional[str] = None
     username: Optional[str] = None
     # Solo se escribe si viene; nunca se devuelve.
     password: Optional[str] = None
@@ -84,6 +91,12 @@ class RestoreRequest(BaseModel):
     active_profile: Optional[str] = None
     address_list: str = "morosos"
     comment: Optional[str] = None
+
+
+class ShutdownRequest(BaseModel):
+    """Apagar es irreversible a distancia; el nombre se valida en el servidor."""
+
+    confirm_name: str = Field(min_length=1, description="Nombre exacto del equipo a apagar")
 
 
 class ActionResult(BaseModel):

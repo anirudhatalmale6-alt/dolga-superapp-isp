@@ -306,6 +306,182 @@ async def test_unknown_suspend_method(wired):
         await svc.suspend_customer("cliente001", method="apagar-el-router")
 
 
+# -------------------------------------------------- salud, WAN y mantenimiento
+
+
+@pytest.mark.asyncio
+async def test_health_on_board_with_sensor(wired):
+    svc, _ = wired
+    health = await svc.health()
+    assert health["available"] is True
+    assert health["temperature_c"] == 59.0
+    assert health["voltage_v"] == 24.1
+
+
+@pytest.mark.asyncio
+async def test_health_on_board_without_sensor_reports_unavailable():
+    """Un RB750Gr3 no tiene sensor: el dato no existe y NO se inventa."""
+    state = FakeRouterOSState(USER, PASSWORD, has_health_sensor=False)
+    server = await FakeRouterOSBinaryServer(state).start()
+    client = MikrotikClient("127.0.0.1", USER, PASSWORD, mode=API, api_port=server.port, timeout=5.0)
+    try:
+        health = await MikrotikService(client).health()
+        assert health["available"] is False
+        assert health["temperature_c"] is None
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_without_sensor_keeps_temperature_none():
+    state = FakeRouterOSState(USER, PASSWORD, has_health_sensor=False)
+    server = await FakeRouterOSBinaryServer(state).start()
+    client = MikrotikClient("127.0.0.1", USER, PASSWORD, mode=API, api_port=server.port, timeout=5.0)
+    try:
+        snapshot = await MikrotikService(client).snapshot()
+        assert snapshot["temperature_c"] is None
+        assert snapshot["temperature_available"] is False
+        # El resto de la lectura sigue completa.
+        assert snapshot["cpu_load_percent"] == 17
+        assert snapshot["clients_online"] == 2
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_health_v6_single_row_format():
+    """RouterOS 6 devuelve una sola fila con todas las claves, no name/value."""
+    state = FakeRouterOSState(USER, PASSWORD)
+    state.tables["system/health"] = [{".id": "*0", "temperature": "47", "voltage": "23.8"}]
+    server = await FakeRouterOSBinaryServer(state).start()
+    client = MikrotikClient("127.0.0.1", USER, PASSWORD, mode=API, api_port=server.port, timeout=5.0)
+    try:
+        health = await MikrotikService(client).health()
+        assert health["available"] is True
+        assert health["temperature_c"] == 47.0
+        assert health["voltage_v"] == 23.8
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_wan_interfaces(wired):
+    svc, _ = wired
+    wans = await svc.wan_interfaces()
+    assert [w["interface"] for w in wans] == ["ether1-wan"]
+    wan = wans[0]
+    assert wan["address"] == "10.10.0.1/24"
+    assert wan["gateway"] == "10.10.0.254"
+    assert wan["connected"] is True
+    assert wan["rx_mbps"] == 38.4
+    assert wan["tx_mbps"] == 12.8
+
+
+@pytest.mark.asyncio
+async def test_wan_detection_falls_back_to_gateway_network():
+    """RouterOS 6 no manda `immediate-gw`: hay que cruzar el gateway con /ip/address."""
+    state = FakeRouterOSState(USER, PASSWORD)
+    for route in state.tables["ip/route"]:
+        route.pop("immediate-gw", None)
+    server = await FakeRouterOSBinaryServer(state).start()
+    client = MikrotikClient("127.0.0.1", USER, PASSWORD, mode=API, api_port=server.port, timeout=5.0)
+    try:
+        assert await MikrotikService(client).primary_wan() == "ether1-wan"
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_wan_backup_link_down_is_still_listed():
+    """Un respaldo LTE caído tiene que verse: ese estado es justamente el dato."""
+    state = FakeRouterOSState(USER, PASSWORD)
+    state.tables["interface"].append(
+        {
+            ".id": "*4",
+            "name": "lte1-backup",
+            "type": "lte",
+            "running": "false",
+            "disabled": "false",
+            "rx-byte": "0",
+            "tx-byte": "0",
+        }
+    )
+    state.tables["ip/address"].append(
+        {".id": "*3", "address": "10.20.30.2/24", "interface": "lte1-backup", "disabled": "false"}
+    )
+    state.tables["ip/route"].append(
+        {
+            ".id": "*2",
+            "dst-address": "0.0.0.0/0",
+            "gateway": "10.20.30.1",
+            "immediate-gw": "10.20.30.1%lte1-backup",
+            "distance": "2",
+            "active": "false",
+        }
+    )
+    server = await FakeRouterOSBinaryServer(state).start()
+    client = MikrotikClient("127.0.0.1", USER, PASSWORD, mode=API, api_port=server.port, timeout=5.0)
+    try:
+        svc = MikrotikService(client)
+        wans = await svc.wan_interfaces()
+        names = [w["interface"] for w in wans]
+        assert names == ["ether1-wan", "lte1-backup"]  # ordenadas por distancia
+        backup = wans[1]
+        assert backup["running"] is False
+        assert backup["connected"] is False
+        assert backup["rx_mbps"] == 0.0
+        # La principal sigue siendo la que está arriba.
+        assert await svc.primary_wan() == "ether1-wan"
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot(wired):
+    svc, _ = wired
+    snapshot = await svc.snapshot()
+    assert snapshot["identity"] == "DOLGA-BORDE-01"
+    assert snapshot["model"] == "RB5009UG+S+"
+    assert snapshot["serial_number"] == "HEX1234ABCD"
+    assert snapshot["cpu_load_percent"] == 17
+    assert snapshot["temperature_c"] == 59.0
+    assert snapshot["clients_online"] == 2
+    assert snapshot["wan_interface"] == "ether1-wan"
+    assert snapshot["wan_rx_mbps"] == 38.4
+    assert snapshot["uptime_seconds"] == 788645
+
+
+@pytest.mark.asyncio
+async def test_check_updates(wired):
+    svc, _ = wired
+    result = await svc.check_updates()
+    assert result["installed_version"] == "7.14.3"
+    assert result["latest_version"] == "7.15.2"
+    assert result["update_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_updates_when_already_current(wired):
+    svc, state = wired
+    state.tables["system/package/update"][0]["latest-version"] = "7.14.3"
+    result = await svc.check_updates()
+    assert result["update_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_reboot_and_shutdown_reach_the_router(wired):
+    svc, state = wired
+    await svc.reboot()
+    assert state.rebooted == 1
+    await svc.shutdown()
+    assert state.shutdown_count == 1
+
+
 # ------------------------------------------------------------------ errores
 
 

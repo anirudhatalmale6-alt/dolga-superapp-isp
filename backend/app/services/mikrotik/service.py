@@ -116,6 +116,53 @@ class MikrotikService:
             "upgrade_firmware": data.get("upgrade-firmware"),
         }
 
+    async def health(self) -> Dict[str, Any]:
+        """Temperatura y voltaje de `/system/health`.
+
+        Ojo: solo las placas con sensor entregan estos valores. Un RB4011 sí
+        reporta temperatura; un RB750Gr3 o un RB2011 no tienen sensor y el menú
+        devuelve vacío. Por eso `available` puede ser False y eso NO es un
+        error: es un dato que ese hardware no puede dar. Nunca inventamos un
+        número en ese caso.
+        """
+        try:
+            rows = await self.client.print("system/health")
+        except MikrotikCommandError:
+            # RouterOS 6 en placas sin sensores ni siquiera expone el menú.
+            return {"available": False, "temperature_c": None, "voltage_v": None}
+
+        values: Dict[str, str] = {}
+        for row in rows:
+            if "name" in row and "value" in row:
+                # RouterOS 7: una fila por lectura -> {"name": "temperature", "value": "59"}
+                values[row["name"]] = row["value"]
+            else:
+                # RouterOS 6: una sola fila con todas las claves.
+                values.update({k: v for k, v in row.items() if not k.startswith(".")})
+
+        def _num(*keys: str) -> Optional[float]:
+            for key in keys:
+                if key in values:
+                    try:
+                        return float(str(values[key]).strip())
+                    except ValueError:
+                        continue
+            return None
+
+        temperature = _num("temperature", "board-temperature1", "board-temperature")
+        cpu_temperature = _num("cpu-temperature")
+        # Si la placa solo reporta la del CPU, esa es la que mostramos.
+        if temperature is None:
+            temperature = cpu_temperature
+
+        return {
+            "available": temperature is not None,
+            "temperature_c": temperature,
+            "cpu_temperature_c": cpu_temperature,
+            "voltage_v": _num("voltage"),
+            "raw": values or None,
+        }
+
     # ------------------------------------------------------------ interfaces
 
     async def interfaces(self) -> List[Dict[str, Any]]:
@@ -177,6 +224,106 @@ class MikrotikService:
             }
             for row in rows
         ]
+
+    async def routes(self) -> List[Dict[str, Any]]:
+        rows = await self.client.print("ip/route")
+        return [
+            {
+                "id": row.get(".id"),
+                "dst_address": row.get("dst-address"),
+                "gateway": row.get("gateway"),
+                "immediate_gw": row.get("immediate-gw"),
+                "distance": to_int(row.get("distance")),
+                "active": to_bool(row.get("active")),
+                "dynamic": to_bool(row.get("dynamic")),
+                "comment": row.get("comment"),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _interface_of_route(route: Dict[str, Any], addresses: List[Dict[str, Any]]) -> Optional[str]:
+        """Deduce por qué interfaz sale una ruta.
+
+        RouterOS 7 trae `immediate-gw` con la forma `192.168.1.254%ether1`.
+        En RouterOS 6 hay que cruzar el gateway contra las redes de /ip/address.
+        """
+        immediate = route.get("immediate_gw") or ""
+        if "%" in immediate:
+            return immediate.split("%", 1)[1]
+
+        gateway = (route.get("gateway") or "").split(",")[0].strip()
+        if not gateway:
+            return None
+        # El gateway puede ser directamente el nombre de una interfaz (PPPoE cliente).
+        for address in addresses:
+            if address["interface"] == gateway:
+                return gateway
+        # Si no, buscamos la interfaz cuya red contiene al gateway.
+        for address in addresses:
+            network = (address.get("address") or "").split("/")[0]
+            if not network:
+                continue
+            prefix = ".".join(network.split(".")[:3])
+            if prefix and gateway.startswith(prefix + "."):
+                return address["interface"]
+        return None
+
+    async def wan_interfaces(self, measure_traffic: bool = True) -> List[Dict[str, Any]]:
+        """Interfaces que llevan tráfico a la calle, con su IP, gateway y velocidad.
+
+        Se consideran WAN las interfaces por donde sale una ruta por defecto
+        (0.0.0.0/0). Se listan también las inactivas —un respaldo LTE caído, por
+        ejemplo— porque justamente ese estado es lo que hay que ver.
+        """
+        addresses = await self.ip_addresses()
+        routes = await self.routes()
+        interfaces = {i["name"]: i for i in await self.interfaces()}
+
+        defaults = [r for r in routes if (r.get("dst_address") or "").startswith("0.0.0.0/0")]
+        by_address = {a["interface"]: a for a in addresses if not a["disabled"]}
+
+        result: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for route in sorted(defaults, key=lambda r: (r.get("distance") or 0)):
+            name = self._interface_of_route(route, addresses)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            iface = interfaces.get(name, {})
+            address = by_address.get(name, {})
+            entry = {
+                "interface": name,
+                "comment": iface.get("comment"),
+                "running": iface.get("running", False),
+                "disabled": iface.get("disabled", False),
+                "connected": bool(iface.get("running")) and route.get("active", False),
+                "address": address.get("address"),
+                "gateway": (route.get("gateway") or "").split(",")[0].strip() or None,
+                "distance": route.get("distance"),
+                "rx_mbps": None,
+                "tx_mbps": None,
+            }
+            if measure_traffic and entry["running"]:
+                try:
+                    traffic = await self.interface_traffic(name)
+                    entry["rx_mbps"] = traffic["rx_mbps"]
+                    entry["tx_mbps"] = traffic["tx_mbps"]
+                except MikrotikCommandError:
+                    pass
+            else:
+                entry["rx_mbps"] = 0.0
+                entry["tx_mbps"] = 0.0
+            result.append(entry)
+        return result
+
+    async def primary_wan(self) -> Optional[str]:
+        """Nombre de la interfaz WAN principal (la ruta por defecto de menor distancia)."""
+        wans = await self.wan_interfaces(measure_traffic=False)
+        for wan in wans:
+            if wan["running"]:
+                return wan["interface"]
+        return wans[0]["interface"] if wans else None
 
     # ----------------------------------------------------------------- PPPoE
 
@@ -417,7 +564,89 @@ class MikrotikService:
             "actions": actions,
         }
 
+    # ------------------------------------------------------- mantenimiento
+
+    async def reboot(self) -> Dict[str, Any]:
+        """Reinicia el equipo. Vuelve solo en 1-2 minutos."""
+        await self.client.run("system", "reboot")
+        return {"action": "reboot", "ok": True}
+
+    async def shutdown(self) -> Dict[str, Any]:
+        """Apaga el equipo.
+
+        A diferencia de reiniciar, el equipo NO vuelve solo: hay que ir al sitio
+        a darle corriente. Por eso la API lo expone detrás del rol admin y de una
+        confirmación explícita.
+        """
+        await self.client.run("system", "shutdown")
+        return {"action": "shutdown", "ok": True}
+
+    async def check_updates(self) -> Dict[str, Any]:
+        """Consulta si hay una versión nueva de RouterOS. No instala nada."""
+        try:
+            await self.client.run("system/package/update", "check-for-updates")
+            rows = await self.client.print("system/package/update")
+        except MikrotikCommandError as exc:
+            return {"available": False, "error": str(exc)}
+        data = rows[0] if rows else {}
+        installed = data.get("installed-version")
+        latest = data.get("latest-version")
+        return {
+            "channel": data.get("channel"),
+            "installed_version": installed,
+            "latest_version": latest,
+            "update_available": bool(latest and installed and latest != installed),
+            "status": data.get("status"),
+        }
+
     # ------------------------------------------------------------- resumen
+
+    async def snapshot(self, wan_interface: Optional[str] = None) -> Dict[str, Any]:
+        """Una lectura compacta del equipo, pensada para la tabla de la flota y
+        para el servicio de monitoreo que guarda el histórico.
+
+        Hace el mínimo de consultas posible porque se ejecuta contra todos los
+        equipos cada pocos segundos.
+        """
+        resource = await self.system_resource()
+        health = await self.health()
+        board = await self.routerboard()
+        active = await self.pppoe_active()
+
+        wan = wan_interface
+        if not wan:
+            wan = await self.primary_wan()
+
+        rx_mbps = tx_mbps = None
+        if wan:
+            try:
+                traffic = await self.interface_traffic(wan)
+                rx_mbps = traffic["rx_mbps"]
+                tx_mbps = traffic["tx_mbps"]
+            except MikrotikCommandError:
+                pass
+
+        return {
+            "identity": resource["identity"],
+            "model": board.get("model") or resource.get("board_name"),
+            "serial_number": board.get("serial_number"),
+            "version": resource["version"],
+            "uptime": resource["uptime"],
+            "uptime_seconds": resource["uptime_seconds"],
+            "cpu_load_percent": resource["cpu_load_percent"],
+            "memory_used_percent": resource["memory_used_percent"],
+            "memory_used_human": resource["memory_used_human"],
+            "memory_total_human": resource["memory_total_human"],
+            "disk_used_percent": resource["disk_used_percent"],
+            # None cuando la placa no tiene sensor: el frontend muestra "n/d".
+            "temperature_c": health["temperature_c"],
+            "temperature_available": health["available"],
+            "clients_online": len(active),
+            "wan_interface": wan,
+            "wan_rx_mbps": rx_mbps,
+            "wan_tx_mbps": tx_mbps,
+            "transport": self.client.transport,
+        }
 
     async def dashboard(self) -> Dict[str, Any]:
         resource = await self.system_resource()

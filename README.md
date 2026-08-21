@@ -25,14 +25,32 @@ justo antes de abrir la conexión con el router.
 | Lectura | CPU, memoria, disco, uptime, versión, RouterBOARD, interfaces, contadores, tráfico instantáneo, direcciones IP |
 | PPPoE | Secrets, sesiones activas, perfiles, y vista cruzada online / offline / suspendido |
 | Acciones | Suspender, reactivar y cerrar sesión de un cliente (3 métodos de corte) |
-| Frontend React | Login, listado de routers con estado, y módulo MikroTik con 3 pestañas |
-| Pruebas | 58 pruebas automáticas contra un RouterOS simulado, por los dos transportes |
+| Salud del equipo | Temperatura y voltaje de `/system/health`, informando "no disponible" en placas sin sensor |
+| WAN | Detección de las interfaces con ruta por defecto, con IP, gateway y velocidad |
+| Mantenimiento | Revisar actualizaciones de RouterOS, reiniciar, y apagar con confirmación validada en el servidor |
+| Monitoreo | Servicio de fondo que muestrea todos los equipos y guarda el histórico para las gráficas |
+| Vista de flota | Totales de la red y tabla de equipos servidos desde el histórico, sin golpear los routers |
+| Frontend React | Login, vista de flota con indicadores, y detalle de equipo con gráficas en SVG |
+| Pruebas | 92 pruebas automáticas contra un RouterOS simulado, por los dos transportes |
 
 ### Todavía NO construido
 
 Dashboard general, Clientes, Planes, Facturación, Cobranza, Pagos, Técnicos,
 Tickets, Instalaciones, Averías, Inventario, Ubiquiti/UISP, OLT/FTTH,
-Monitoreo histórico, Notificaciones, WhatsApp, Automatización e IA.
+Notificaciones, WhatsApp, Automatización e IA.
+
+---
+
+## Qué NO puede entregar RouterOS, y cómo se resuelve
+
+Vale la pena dejarlo escrito para que nadie espere magia del equipo:
+
+| Dato | Situación real | Solución aplicada |
+|---|---|---|
+| Histórico de tráfico y CPU | RouterOS entrega el valor de *ahora*, no la serie de tiempo | Servicio de monitoreo propio que muestrea cada `MONITOR_INTERVAL_SECONDS` y guarda en PostgreSQL |
+| Temperatura | Solo la reportan las placas con sensor. Un RB4011 sí; un RB750Gr3 o un RB2011 no | Se muestra donde existe y "n/d" donde no. Nunca se inventa un valor |
+| Apagar el equipo | Se ejecuta, pero el equipo no vuelve sin corriente en sitio | Restringido al rol admin y con el nombre del equipo validado **en el servidor** |
+| Actualizar RouterOS | La instalación reinicia el equipo | La plataforma solo consulta si hay versión nueva; instalar queda como acción explícita |
 
 ---
 
@@ -83,7 +101,8 @@ npm run dev        # http://localhost:5173
 
 ### Modo demostración (sin PostgreSQL ni router real)
 
-Levanta un RouterOS simulado, la API sobre SQLite y dos equipos ya registrados:
+Levanta cinco RouterOS simulados (uno de ellos caído a propósito), la API sobre
+SQLite y el servicio de monitoreo llenando el histórico:
 
 ```
 cd backend
@@ -133,6 +152,7 @@ backend/
     api/v1/      auth, devices, mikrotik
     services/
       mikrotik/  rest.py, binary_api.py, client.py (unificado), service.py (negocio)
+      monitoring.py  muestreo periódico, histórico y resumen de flota
   scripts/       create_admin.py, demo_server.py
   tests/         RouterOS simulado + suite de pruebas
 frontend/

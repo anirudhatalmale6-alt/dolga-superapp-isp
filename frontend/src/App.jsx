@@ -2,7 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout'
 import { useAuth } from './auth'
 import Login from './pages/Login'
-import Routers from './pages/Routers'
+import Mikrotik from './pages/Mikrotik'
 import RouterDetail from './pages/RouterDetail'
 import Placeholder from './pages/Placeholder'
 
@@ -31,7 +31,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/mikrotik" replace />} />
         <Route path="/login" element={<Navigate to="/mikrotik" replace />} />
-        <Route path="/mikrotik" element={<Routers />} />
+        <Route path="/mikrotik" element={<Mikrotik />} />
         <Route path="/mikrotik/:deviceId" element={<RouterDetail />} />
         <Route
           path="/clientes"

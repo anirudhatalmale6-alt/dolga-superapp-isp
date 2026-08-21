@@ -108,6 +108,40 @@ DEFAULT_STATE: Dict[str, Any] = {
         {".id": "*1", "address": "192.168.88.1/24", "network": "192.168.88.0", "interface": "ether2-lan", "disabled": "false"},
         {".id": "*2", "address": "10.10.0.1/24", "network": "10.10.0.0", "interface": "ether1-wan", "disabled": "false"},
     ],
+    "ip/route": [
+        {
+            ".id": "*0",
+            "dst-address": "0.0.0.0/0",
+            "gateway": "10.10.0.254",
+            "immediate-gw": "10.10.0.254%ether1-wan",
+            "distance": "1",
+            "active": "true",
+            "dynamic": "false",
+        },
+        {
+            ".id": "*1",
+            "dst-address": "192.168.88.0/24",
+            "gateway": "ether2-lan",
+            "distance": "0",
+            "active": "true",
+            "dynamic": "true",
+        },
+    ],
+    # RouterOS 7 devuelve una fila por lectura. Las placas sin sensor devuelven
+    # una lista vacía, que es el caso que hay que manejar sin inventar números.
+    "system/health": [
+        {".id": "*0", "name": "temperature", "value": "59", "type": "C"},
+        {".id": "*1", "name": "voltage", "value": "24.1", "type": "V"},
+    ],
+    "system/package/update": [
+        {
+            ".id": "*0",
+            "channel": "stable",
+            "installed-version": "7.14.3",
+            "latest-version": "7.15.2",
+            "status": "New version is available",
+        }
+    ],
     "ppp/profile": [
         {".id": "*0", "name": "default", "local-address": "10.20.0.1", "remote-address": "pool-clientes"},
         {".id": "*1", "name": "PLAN-10M", "local-address": "10.20.0.1", "remote-address": "pool-clientes", "rate-limit": "10M/10M"},
@@ -130,13 +164,33 @@ DEFAULT_STATE: Dict[str, Any] = {
 class FakeRouterOSState:
     """Estado compartido por los dos transportes."""
 
-    def __init__(self, username: str = "api-dolga", password: str = "S3cret!", legacy_login: bool = False):
+    def __init__(
+        self,
+        username: str = "api-dolga",
+        password: str = "S3cret!",
+        legacy_login: bool = False,
+        has_health_sensor: bool = True,
+        vary: bool = False,
+        seed: int = 0,
+    ):
         self.username = username
         self.password = password
         self.legacy_login = legacy_login
+        # `vary` hace que CPU, temperatura y tráfico se muevan entre lecturas,
+        # para que el modo demostración dibuje curvas y no líneas planas. Es
+        # determinista a propósito (nada de aleatorio) para no romper pruebas.
+        self.vary = vary
+        self.seed = seed
+        self._tick = 0
         self.tables: Dict[str, List[Dict[str, str]]] = copy.deepcopy(DEFAULT_STATE)
+        if not has_health_sensor:
+            # Un RB750Gr3 o un RB2011 no traen sensor: el menú existe pero
+            # responde vacío.
+            self.tables["system/health"] = []
         self._next_id = 1000
         self.calls: List[str] = []
+        self.rebooted = 0
+        self.shutdown_count = 0
 
     # ------------------------------------------------------------- utilidades
 
@@ -152,10 +206,27 @@ class FakeRouterOSState:
 
     # ------------------------------------------------------------ operaciones
 
+    def _wobble(self, base: float, amplitude: float, phase: int = 0) -> float:
+        """Oscilación determinista alrededor de `base`, sin usar aleatoriedad."""
+        import math
+
+        angle = (self._tick + self.seed * 7 + phase) / 6.0
+        return base + amplitude * math.sin(angle) + (amplitude / 3.0) * math.sin(angle * 2.7)
+
     def do_print(
         self, path: str, query: Optional[Dict[str, str]] = None, proplist: Optional[List[str]] = None
     ) -> List[Dict[str, str]]:
         self.calls.append(f"print {path} {query or {}}")
+        if self.vary and path.strip("/") == "system/resource":
+            self._tick += 1
+            row = self.tables["system/resource"][0]
+            row["cpu-load"] = str(max(2, min(96, int(self._wobble(32, 14)))))
+            free = int(self._wobble(0.52, 0.06) * 1073741824)
+            row["free-memory"] = str(max(52428800, free))
+            if self.tables.get("system/health"):
+                for entry in self.tables["system/health"]:
+                    if entry.get("name") == "temperature":
+                        entry["value"] = str(max(30, min(78, int(self._wobble(56, 6, phase=3)))))
         rows = self.table(path)
         result = []
         for row in rows:
@@ -198,15 +269,27 @@ class FakeRouterOSState:
             name = attrs.get("interface", "")
             if not any(row.get("name") == name for row in self.tables["interface"]):
                 raise KeyError(f"input does not match any value of interface")
+            rx_bps, tx_bps = 38400000, 12800000
+            if self.vary:
+                rx_bps = int(self._wobble(78_000_000, 22_000_000, phase=1))
+                tx_bps = int(self._wobble(34_000_000, 11_000_000, phase=5))
             return [
                 {
                     "name": name,
-                    "rx-packets-per-second": "1240",
-                    "rx-bits-per-second": "38400000",
-                    "tx-packets-per-second": "980",
-                    "tx-bits-per-second": "12800000",
+                    "rx-packets-per-second": str(max(0, rx_bps // 12000)),
+                    "rx-bits-per-second": str(max(0, rx_bps)),
+                    "tx-packets-per-second": str(max(0, tx_bps // 12000)),
+                    "tx-bits-per-second": str(max(0, tx_bps)),
                 }
             ]
+        if path.strip("/") == "system" and command == "reboot":
+            self.rebooted += 1
+            return []
+        if path.strip("/") == "system" and command == "shutdown":
+            self.shutdown_count += 1
+            return []
+        if path.strip("/") == "system/package/update" and command == "check-for-updates":
+            return []
         if command == "print":
             return self.do_print(path, {k: v for k, v in attrs.items() if not k.startswith(".")})
         raise KeyError(f"no such command ({command})")

@@ -311,3 +311,121 @@ async def test_device_not_found(ctx):
     client, _, _, _ = ctx
     headers = await _login(client, "admin@dolga.net", "Admin12345")
     assert (await client.get("/api/v1/mikrotik/999/resource", headers=headers)).status_code == 404
+
+
+# ------------------------------------------------- salud, WAN y mantenimiento
+
+
+@pytest.mark.asyncio
+async def test_health_and_wan_endpoints(ctx):
+    client, _, server, _ = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    device_id = await _register_router(client, headers, server.port)
+    base = f"/api/v1/mikrotik/{device_id}"
+
+    health = (await client.get(f"{base}/health", headers=headers)).json()
+    assert health["available"] is True
+    assert health["temperature_c"] == 59.0
+
+    wan = (await client.get(f"{base}/wan", headers=headers)).json()
+    assert wan[0]["interface"] == "ether1-wan"
+    assert wan[0]["gateway"] == "10.10.0.254"
+
+    snapshot = (await client.get(f"{base}/snapshot", headers=headers)).json()
+    assert snapshot["clients_online"] == 2
+
+
+@pytest.mark.asyncio
+async def test_updates_and_reboot(ctx):
+    client, state, server, _ = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    device_id = await _register_router(client, headers, server.port)
+    base = f"/api/v1/mikrotik/{device_id}"
+
+    updates = (await client.get(f"{base}/updates", headers=headers)).json()
+    assert updates["update_available"] is True
+
+    response = await client.post(f"{base}/reboot", headers=headers)
+    assert response.status_code == 200
+    assert state.rebooted == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_requires_the_exact_device_name(ctx):
+    """La confirmación se valida en el servidor: sin el nombre no se apaga nada."""
+    client, state, server, _ = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    device_id = await _register_router(client, headers, server.port)
+    base = f"/api/v1/mikrotik/{device_id}"
+
+    wrong = await client.post(f"{base}/shutdown", headers=headers, json={"confirm_name": "cualquier cosa"})
+    assert wrong.status_code == 400
+    assert state.shutdown_count == 0
+
+    right = await client.post(f"{base}/shutdown", headers=headers, json={"confirm_name": "Borde principal"})
+    assert right.status_code == 200, right.text
+    assert state.shutdown_count == 1
+    assert "no volverá solo" in right.json()["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_only_admin_can_shutdown(ctx):
+    client, state, server, _ = ctx
+    admin = await _login(client, "admin@dolga.net", "Admin12345")
+    device_id = await _register_router(client, admin, server.port)
+    tech = await _login(client, "tecnico@dolga.net", "Tecnico12345")
+
+    response = await client.post(
+        f"/api/v1/mikrotik/{device_id}/shutdown", headers=tech, json={"confirm_name": "Borde principal"}
+    )
+    assert response.status_code == 403
+    assert state.shutdown_count == 0
+
+
+# ------------------------------------------------------------------ monitoreo
+
+
+@pytest.mark.asyncio
+async def test_fleet_endpoint(ctx):
+    client, _, server, Session = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    await _register_router(client, headers, server.port)
+
+    # Sin muestras todavía: nada debe declararse en línea.
+    empty = (await client.get("/api/v1/monitoring/fleet", headers=headers)).json()
+    assert empty["devices_total"] == 1
+    assert empty["devices_online"] == 0
+
+    from app.services import monitoring
+
+    await monitoring.poll_once(Session)
+
+    fleet = (await client.get("/api/v1/monitoring/fleet", headers=headers)).json()
+    assert fleet["devices_online"] == 1
+    assert fleet["clients_total"] == 2
+    assert fleet["devices"][0]["cpu_load_percent"] == 17
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint(ctx):
+    client, _, server, Session = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    device_id = await _register_router(client, headers, server.port)
+
+    from app.services import monitoring
+
+    await monitoring.poll_once(Session)
+    await monitoring.poll_once(Session)
+
+    history = (
+        await client.get(f"/api/v1/monitoring/devices/{device_id}/history?minutes=30", headers=headers)
+    ).json()
+    assert len(history["points"]) == 2
+    assert history["points"][0]["rx_mbps"] == 38.4
+    assert history["points"][0]["reachable"] is True
+
+
+@pytest.mark.asyncio
+async def test_monitoring_requires_authentication(ctx):
+    client, _, _, _ = ctx
+    assert (await client.get("/api/v1/monitoring/fleet")).status_code == 401
