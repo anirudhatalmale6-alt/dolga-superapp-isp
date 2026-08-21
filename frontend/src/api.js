@@ -51,6 +51,16 @@ export const api = {
   device: (id) => request(`/devices/${id}`),
   testConnection: (id) => request(`/devices/${id}/test-connection`, { method: 'POST' }),
 
+  // Ubiquiti / UISP
+  uispControllers: () => request('/uisp/controllers'),
+  uispTestConnection: (id) => request(`/uisp/controllers/${id}/test-connection`, { method: 'POST' }),
+  uispOverview: (id) => request(`/uisp/${id}/overview`),
+  uispTopology: (id) => request(`/uisp/${id}/topology`),
+  uispStations: (id, apId) => request(`/uisp/${id}/sectors/${encodeURIComponent(apId)}/stations`),
+  uispDevice: (id, deviceId) => request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}`),
+  uispStatistics: (id, deviceId, interval = 'hour') =>
+    request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}/statistics?interval=${interval}`),
+
   fleet: () => request('/monitoring/fleet'),
   historyOf: (id, minutes = 60) =>
     request(`/monitoring/devices/${id}/history?minutes=${minutes}`),

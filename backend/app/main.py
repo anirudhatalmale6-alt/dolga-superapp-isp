@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import AsyncSessionLocal, engine
 from app.models import monitoring as monitoring_models  # noqa: F401  (registra las tablas)
-from app.models import network, user  # noqa: F401
+from app.models import network, uisp, user  # noqa: F401
 from app.services.monitoring import monitor_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

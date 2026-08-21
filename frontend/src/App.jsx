@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import { useAuth } from './auth'
 import Login from './pages/Login'
 import Mikrotik from './pages/Mikrotik'
+import Ubiquiti from './pages/Ubiquiti'
 import RouterDetail from './pages/RouterDetail'
 import Placeholder from './pages/Placeholder'
 
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/login" element={<Navigate to="/mikrotik" replace />} />
         <Route path="/mikrotik" element={<Mikrotik />} />
         <Route path="/mikrotik/:deviceId" element={<RouterDetail />} />
+        <Route path="/ubiquiti" element={<Ubiquiti />} />
         <Route
           path="/clientes"
           element={

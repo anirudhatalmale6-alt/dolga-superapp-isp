@@ -11,7 +11,7 @@ const MODULOS = [
   { label: 'Servicios de Internet', to: null },
   { label: 'Red y Monitoreo', to: null },
   { label: 'MikroTik', to: '/mikrotik' },
-  { label: 'Ubiquiti', to: null },
+  { label: 'Ubiquiti', to: '/ubiquiti' },
   { label: 'Reportes', to: null },
   { label: 'Inventario', to: null },
   { label: 'Soporte / Tickets', to: null },

@@ -36,8 +36,10 @@ from app.db.base import Base
 from app.db.session import get_session
 from app.main import app
 from app.models.network import MikrotikApiMode, NetworkDevice
+from app.models.uisp import UispController
 from app.models.user import User, UserRole
 from tests.fake_routeros import FakeRouterOSBinaryServer, FakeRouterOSState
+from tests.fake_uisp import FakeUispServer, FakeUispState, _ap, _station
 
 DEMO_ADMIN = ("admin@dolga.net", "Admin12345")
 DEMO_COBRANZA = ("cobranza@dolga.net", "Cobranza12345")
@@ -84,6 +86,47 @@ def _poblar_clientes(state: FakeRouterOSState, cantidad: int, prefijo: str) -> N
                     "session-id": f"0x8100{index:04x}",
                 }
             )
+
+
+UISP_TOKEN = "app-key-demo"
+
+# (id, nombre, sitio, en línea, cuántas estaciones)
+SECTORES_DEMO = [
+    ("ap-1", "Sector Norte 1", "site-1", "Torre Principal", True, 34),
+    ("ap-2", "Sector Sur 2", "site-1", "Torre Principal", True, 28),
+    ("ap-3", "Sector Este 3", "site-1", "Torre Principal", True, 19),
+    ("ap-4", "Sector Sabana 1", "site-2", "Sitio Sabana", True, 22),
+    ("ap-5", "Sector Sabana 2", "site-2", "Sitio Sabana", False, 11),
+]
+
+
+def _uisp_demo_state() -> FakeUispState:
+    """Una red inalámbrica de tamaño creíble para la demostración."""
+    state = FakeUispState(UISP_TOKEN)
+    state.devices = []
+
+    for ap_id, nombre, site_id, site_name, online, cantidad in SECTORES_DEMO:
+        state.devices.append(
+            _ap(ap_id, nombre, site_id, site_name, online=online, frequency=5680 + int(ap_id[-1]) * 20)
+        )
+        for i in range(cantidad):
+            # Señales repartidas de forma realista: la mayoría buenas, unas
+            # pocas flojas y alguna francamente mala.
+            señal = -52 - ((i * 7) % 36)
+            caida = i % 13 == 0
+            state.devices.append(
+                _station(
+                    f"st-{ap_id[-1]}{i:02d}",
+                    f"Cliente {nombre.split()[1]} {i + 1:02d}",
+                    ap_id,
+                    nombre,
+                    site_id,
+                    site_name,
+                    None if (caida or not online) else señal,
+                    online=online and not caida,
+                )
+            )
+    return state
 
 
 async def bootstrap() -> None:
@@ -136,9 +179,18 @@ async def bootstrap() -> None:
         )
     )
 
+    uisp_server = FakeUispServer(_uisp_demo_state()).start()
+    print(f"[demo] UISP simulado en {uisp_server.base_url}")
+
     async with Session() as session:
         session.add_all(
             [
+                UispController(
+                    name="UISP Principal",
+                    base_url=f"{uisp_server.base_url}/nms/api/v2.1",
+                    token_encrypted=encrypt_secret(UISP_TOKEN),
+                    verify_tls=False,
+                ),
                 User(
                     email=DEMO_ADMIN[0],
                     full_name="Olga Administradora",

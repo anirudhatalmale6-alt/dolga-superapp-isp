@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     MIKROTIK_TIMEOUT: float = 8.0
     MIKROTIK_VERIFY_TLS: bool = False
 
+    # UISP responde más lento que un router: agrega toda su red en cada consulta.
+    UISP_TIMEOUT: float = 15.0
+
     # Monitoreo: RouterOS no guarda histórico, así que lo muestreamos nosotros.
     MONITOR_ENABLED: bool = True
     MONITOR_INTERVAL_SECONDS: int = 30

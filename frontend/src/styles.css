@@ -1043,3 +1043,27 @@ thead th.tight {
 tr:hover .chevron a {
   color: var(--accent);
 }
+
+.row-selected,
+.row-selected:hover {
+  background: #17242f;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* La lista de clientes de un sector puede tener decenas de filas: se desplaza
+   dentro de su tarjeta en vez de estirar la página. */
+.client-list {
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.client-list table {
+  min-width: 0;
+}
+
+.client-list thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-raised);
+  z-index: 1;
+}

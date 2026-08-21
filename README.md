@@ -30,14 +30,20 @@ justo antes de abrir la conexión con el router.
 | Mantenimiento | Revisar actualizaciones de RouterOS, reiniciar, y apagar con confirmación validada en el servidor |
 | Monitoreo | Servicio de fondo que muestrea todos los equipos y guarda el histórico para las gráficas |
 | Vista de flota | Totales de la red y tabla de equipos servidos desde el histórico, sin golpear los routers |
-| Frontend React | Login, vista de flota con indicadores, y detalle de equipo con gráficas en SVG |
-| Pruebas | 92 pruebas automáticas contra un RouterOS simulado, por los dos transportes |
+| Ubiquiti / UISP | Sitios, sectores, estaciones, señal, frecuencia, tráfico e histórico que UISP ya guarda |
+| Topología inalámbrica | Clientes agrupados por sector, con la peor señal primero y el listado de enlaces flojos |
+| Frontend React | Login, vista de flota, detalle de equipo con gráficas en SVG, y módulo Ubiquiti |
+| Pruebas | 127 pruebas automáticas contra un RouterOS y un UISP simulados |
 
 ### Todavía NO construido
 
 Dashboard general, Clientes, Planes, Facturación, Cobranza, Pagos, Técnicos,
-Tickets, Instalaciones, Averías, Inventario, Ubiquiti/UISP, OLT/FTTH,
-Notificaciones, WhatsApp, Automatización e IA.
+Tickets, Instalaciones, Averías, Inventario, OLT/FTTH, Notificaciones,
+WhatsApp, Automatización e IA.
+
+De Ubiquiti falta todavía el histórico propio (hoy se usa el que entrega UISP)
+y el enlace de cada estación con la ficha del cliente, que llega con el módulo
+de Clientes.
 
 ---
 
@@ -51,6 +57,16 @@ Vale la pena dejarlo escrito para que nadie espere magia del equipo:
 | Temperatura | Solo la reportan las placas con sensor. Un RB4011 sí; un RB750Gr3 o un RB2011 no | Se muestra donde existe y "n/d" donde no. Nunca se inventa un valor |
 | Apagar el equipo | Se ejecuta, pero el equipo no vuelve sin corriente en sitio | Restringido al rol admin y con el nombre del equipo validado **en el servidor** |
 | Actualizar RouterOS | La instalación reinicia el equipo | La plataforma solo consulta si hay versión nueva; instalar queda como acción explícita |
+| Señal en equipos que no son antenas | Un switch o un router de UISP no reportan señal ni frecuencia | Esos campos quedan en `None`, nunca en 0 |
+| Estación sin sector en UISP | UISP no siempre dice a qué antena está enlazada | Se listan aparte en vez de desaparecer del conteo |
+
+Sobre Ubiquiti: se habla con UISP, no con cada antena. Además de ser lo que
+Ubiquiti recomienda, evita consultar cada radio cada pocos segundos, que es
+tráfico que se le quita al cliente conectado a ese sector. UISP ya guarda su
+propio histórico, así que ahí no hace falta el muestreo que sí necesita MikroTik.
+
+Se autentica con una App Key (Configuración -> Usuarios -> App keys), no con la
+contraseña del operador: se puede revocar sola sin tocar la cuenta.
 
 ---
 
@@ -101,8 +117,9 @@ npm run dev        # http://localhost:5173
 
 ### Modo demostración (sin PostgreSQL ni router real)
 
-Levanta cinco RouterOS simulados (uno de ellos caído a propósito), la API sobre
-SQLite y el servicio de monitoreo llenando el histórico:
+Levanta cinco RouterOS simulados (uno de ellos caído a propósito), un UISP
+simulado con 5 sectores y 114 estaciones, la API sobre SQLite y el servicio de
+monitoreo llenando el histórico:
 
 ```
 cd backend
@@ -125,6 +142,10 @@ sobre un socket y un servidor HTTP real para el REST v7, así que se ejercita el
 conector completo, no mocks. Cada prueba de lectura y de corte corre dos veces,
 una por cada transporte.
 
+Ubiquiti se prueba igual: un UISP simulado sirviendo HTTP real, con equipos que
+sí reportan señal y equipos que no, estaciones sin sector asociado y colecciones
+en los dos formatos que UISP usa según versión.
+
 ---
 
 ## Configuración necesaria en el MikroTik
@@ -138,6 +159,16 @@ Crear un usuario dedicado para la plataforma, con permisos mínimos:
 - Habilitar el servicio correspondiente en `/ip/service`:
   `api` (8728) o `api-ssl` (8729) para RouterOS 6, `www-ssl` para REST en v7.
 
+## Configuración necesaria en UISP
+
+1. Entrar a UISP -> Configuración -> Usuarios -> **App keys**.
+2. Crear una App Key nueva con permiso de **lectura**.
+3. Copiar la clave (se muestra una sola vez) y registrarla en la plataforma
+   junto con la dirección del servidor de UISP.
+
+No hace falta la contraseña del operador ni una cuenta de administrador. Si la
+clave se compromete, se revoca desde esa misma pantalla sin afectar a nadie más.
+
 ---
 
 ## Estructura
@@ -149,15 +180,16 @@ backend/
     db/          motor async y base declarativa
     models/      usuarios y equipos de red
     schemas/     contratos de entrada/salida (Pydantic)
-    api/v1/      auth, devices, mikrotik
+    api/v1/      auth, devices, mikrotik, uisp, monitoring
     services/
       mikrotik/  rest.py, binary_api.py, client.py (unificado), service.py (negocio)
+      uisp/      client.py (API de UISP), service.py (sectores, estaciones, señal)
       monitoring.py  muestreo periódico, histórico y resumen de flota
   scripts/       create_admin.py, demo_server.py
-  tests/         RouterOS simulado + suite de pruebas
+  tests/         RouterOS y UISP simulados + suite de pruebas
 frontend/
   src/
-    pages/       Login, Routers, RouterDetail
-    components/  Layout, Stat, SuspensionModal
+    pages/       Login, Mikrotik, RouterDetail, Ubiquiti
+    components/  Layout, Stat, charts (SVG), SuspensionModal, ShutdownModal
     api.js       único punto de salida hacia FastAPI
 ```
