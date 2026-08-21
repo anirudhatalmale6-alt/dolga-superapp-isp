@@ -18,7 +18,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ssl
-from typing import Any, Dict, Iterable, List, Optional
+import time
+from typing import Any, Callable, Dict, Iterable, List, Optional
+
+from app.services.audit import Exchange
 
 from .exceptions import (
     MikrotikAuthError,
@@ -58,6 +61,7 @@ class RouterOSBinaryClient:
         use_tls: bool = False,
         verify_tls: bool = False,
         timeout: float = 8.0,
+        on_exchange: Optional[Callable[[Exchange], None]] = None,
     ) -> None:
         self.host = host
         self.username = username
@@ -66,6 +70,8 @@ class RouterOSBinaryClient:
         self.use_tls = use_tls
         self.verify_tls = verify_tls
         self.timeout = timeout
+        # Bitácora: se anota la sentencia enviada, con las claves enmascaradas.
+        self.on_exchange = on_exchange
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._lock = asyncio.Lock()
@@ -261,9 +267,47 @@ class RouterOSBinaryClient:
                 value = "yes" if value else "no"
             words.append(f"={key}={value}")
         words.extend(queries or [])
+        started = time.perf_counter()
         # Una sola sentencia a la vez por conexión: el protocolo no multiplexa
         # si no se usan tags, y `connect()` debe entrar en la misma sección
         # crítica para no abrir dos sockets en paralelo.
-        async with self._lock:
-            await self.connect()
-            return await self._talk(words)
+        try:
+            async with self._lock:
+                await self.connect()
+                rows = await self._talk(words)
+        except Exception as exc:
+            self._note(words, started, ok=False, error=str(exc))
+            raise
+        self._note(words, started, ok=True, rows=len(rows))
+        return rows
+
+    def _note(self, words, started, *, ok, rows=None, error=None) -> None:
+        """Anota la sentencia en la bitácora. Nunca interrumpe el comando."""
+        if self.on_exchange is None:
+            return
+        try:
+            self.on_exchange(
+                Exchange(
+                    target="routeros-api",
+                    request=f"{self.host}:{self.port} " + " ".join(_safe_word(w) for w in words),
+                    ok=ok,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    rows=rows,
+                    error=error,
+                )
+            )
+        except Exception:  # pragma: no cover - defensivo
+            pass
+
+
+def _safe_word(word: str) -> str:
+    """Oculta el valor de las palabras que llevan una clave.
+
+    Da igual que hoy ningún comando mande claves: el día que se cree un
+    secreto PPPoE desde la plataforma, la sentencia pasaría por aquí y la clave
+    del cliente no debe quedar escrita en la base de datos.
+    """
+    for prefijo in ("=password=", "=new-password=", "=confirm-new-password="):
+        if word.startswith(prefijo):
+            return f"{prefijo}***"
+    return word

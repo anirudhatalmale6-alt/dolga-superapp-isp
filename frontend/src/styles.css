@@ -1067,3 +1067,58 @@ tr:hover .chevron a {
   background: var(--bg-raised);
   z-index: 1;
 }
+
+/* ------------------------------------------------------- bitácora de operaciones */
+
+select.small {
+  padding: 5px 9px;
+  font-size: 12px;
+  height: auto;
+}
+
+.detail-cell {
+  background: #11161f;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px 14px;
+}
+
+.upstream {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.upstream li {
+  font-size: 12px;
+  line-height: 1.5;
+  /* Una URL de UISP es larga: que corte donde haga falta antes de forzar
+     scroll horizontal en toda la página. */
+  overflow-wrap: anywhere;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent-dim);
+}
+
+.upstream li.failed {
+  border-left-color: var(--danger);
+}
+
+.upstream .tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.upstream .err {
+  color: var(--danger);
+}

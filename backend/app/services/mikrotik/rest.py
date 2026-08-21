@@ -7,9 +7,12 @@ superior no tenga que saber cuál transporte está en uso.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+
+from app.services.audit import Exchange
 
 from .exceptions import (
     MikrotikAuthError,
@@ -28,6 +31,7 @@ class RouterOSRestClient:
         use_tls: bool = True,
         verify_tls: bool = False,
         timeout: float = 8.0,
+        on_exchange: Optional[Callable[[Exchange], None]] = None,
     ) -> None:
         scheme = "https" if use_tls else "http"
         self.base_url = f"{scheme}://{host}:{port}/rest"
@@ -35,6 +39,8 @@ class RouterOSRestClient:
         self.password = password
         self.verify_tls = verify_tls
         self.timeout = timeout
+        # Bitácora: se anota la URL que sale hacia el router, nunca la clave.
+        self.on_exchange = on_exchange
         self._client: Optional[httpx.AsyncClient] = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -72,19 +78,46 @@ class RouterOSRestClient:
             return [row for row in payload if isinstance(row, dict)]
         return []
 
+    def _note(self, exchange: Exchange) -> None:
+        if self.on_exchange is None:
+            return
+        try:
+            self.on_exchange(exchange)
+        except Exception:  # pragma: no cover - defensivo
+            pass
+
     async def _request(self, method: str, path: str, json_body: Optional[dict] = None) -> List[Dict[str, str]]:
         client = self._get_client()
         url = path if path.startswith("/") else "/" + path
+        started = time.perf_counter()
+
+        def anotar(*, ok: bool, http_status=None, rows=None, error=None) -> None:
+            self._note(
+                Exchange(
+                    target="routeros-rest",
+                    request=f"{method} {self.base_url}{url}",
+                    ok=ok,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    http_status=http_status,
+                    rows=rows,
+                    error=error,
+                )
+            )
+
         try:
             response = await client.request(method, url, json=json_body)
         except httpx.ConnectError as exc:
+            anotar(ok=False, error=f"no se pudo conectar: {exc}")
             raise MikrotikConnectionError(f"No se pudo conectar a {self.base_url}: {exc}") from exc
         except httpx.TimeoutException as exc:
+            anotar(ok=False, error=f"timeout tras {self.timeout} s")
             raise MikrotikConnectionError(f"Timeout consultando {self.base_url}{url}") from exc
         except httpx.HTTPError as exc:  # pragma: no cover - red
+            anotar(ok=False, error=str(exc))
             raise MikrotikConnectionError(f"Error HTTP hacia {self.base_url}{url}: {exc}") from exc
 
         if response.status_code in (401, 403):
+            anotar(ok=False, http_status=response.status_code, error="credenciales rechazadas")
             raise MikrotikAuthError(
                 f"RouterOS rechazó las credenciales del usuario '{self.username}' "
                 f"(HTTP {response.status_code}). Verifica que el usuario tenga el permiso 'rest-api'."
@@ -97,16 +130,21 @@ class RouterOSRestClient:
                     detail = body.get("message") or body.get("detail") or ""
             except Exception:
                 detail = response.text[:300]
+            anotar(ok=False, http_status=response.status_code, error=detail or None)
             raise MikrotikCommandError(
                 detail or f"HTTP {response.status_code} en {url}", command=url
             )
 
         if not response.content:
+            anotar(ok=True, http_status=response.status_code, rows=0)
             return []
         try:
-            return self._normalize(response.json())
+            rows = self._normalize(response.json())
         except ValueError:
+            anotar(ok=True, http_status=response.status_code, rows=0)
             return []
+        anotar(ok=True, http_status=response.status_code, rows=len(rows))
+        return rows
 
     # ------------------------------------------------------------- API pública
 

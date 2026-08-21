@@ -32,8 +32,10 @@ justo antes de abrir la conexión con el router.
 | Vista de flota | Totales de la red y tabla de equipos servidos desde el histórico, sin golpear los routers |
 | Ubiquiti / UISP | Sitios, sectores, estaciones, señal, frecuencia, tráfico e histórico que UISP ya guarda |
 | Topología inalámbrica | Clientes agrupados por sector, con la peor señal primero y el listado de enlaces flojos |
-| Frontend React | Login, vista de flota, detalle de equipo con gráficas en SVG, y módulo Ubiquiti |
-| Pruebas | 127 pruebas automáticas contra un RouterOS y un UISP simulados |
+| Acciones sobre Ubiquiti | Localizar (parpadeo de LED), reiniciar y actualizar firmware, con los permisos que la API de UISP realmente ofrece |
+| Bitácora de operaciones | Cada consulta y cada acción quedan registradas con la llamada exacta que salió hacia el equipo, su código de respuesta y su demora |
+| Frontend React | Login, vista de flota, detalle de equipo con gráficas en SVG, módulo Ubiquiti y bitácora |
+| Pruebas | 144 pruebas automáticas contra un RouterOS y un UISP simulados |
 
 ### Todavía NO construido
 
@@ -130,6 +132,29 @@ Usuarios de prueba: `admin@dolga.net / Admin12345` y `cobranza@dolga.net / Cobra
 
 ---
 
+## Comprobar contra equipos reales
+
+Además de las pruebas automáticas, hay dos herramientas pensadas para
+comprobar que el dato viene del equipo y no de una pantalla preparada:
+
+- **La bitácora** (menú lateral). Cada fila se abre y muestra las llamadas que
+  salieron: `GET https://tu-uisp/nms/api/v2.1/devices -> HTTP 200 en 312 ms,
+  47 fila(s)`. Los errores también quedan registrados. No guarda credenciales.
+- **`backend/scripts/verify_real.py`**. Se conecta a un UISP o a un MikroTik
+  real, imprime cada llamada y el dato recibido, y no envía nada a ningún lado.
+  Se puede correr desde la propia red del ISP, sin dar acceso a nadie.
+
+```
+export UISP_URL=uisp.midominio.net
+export UISP_KEY=<App Key de solo lectura>
+python -m scripts.verify_real uisp
+```
+
+El protocolo completo de la prueba sobre hardware está en
+[`docs/PRUEBA-REAL.md`](docs/PRUEBA-REAL.md).
+
+---
+
 ## Pruebas
 
 ```
@@ -180,16 +205,17 @@ backend/
     db/          motor async y base declarativa
     models/      usuarios y equipos de red
     schemas/     contratos de entrada/salida (Pydantic)
-    api/v1/      auth, devices, mikrotik, uisp, monitoring
+    api/v1/      auth, devices, mikrotik, uisp, monitoring, audit
     services/
       mikrotik/  rest.py, binary_api.py, client.py (unificado), service.py (negocio)
       uisp/      client.py (API de UISP), service.py (sectores, estaciones, señal)
       monitoring.py  muestreo periódico, histórico y resumen de flota
-  scripts/       create_admin.py, demo_server.py
+      audit.py       bitácora de operaciones y llamadas a los equipos
+  scripts/       create_admin.py, demo_server.py, verify_real.py
   tests/         RouterOS y UISP simulados + suite de pruebas
 frontend/
   src/
-    pages/       Login, Mikrotik, RouterDetail, Ubiquiti
+    pages/       Login, Mikrotik, RouterDetail, Ubiquiti, Registros
     components/  Layout, Stat, charts (SVG), SuspensionModal, ShutdownModal
     api.js       único punto de salida hacia FastAPI
 ```

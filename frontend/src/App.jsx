@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Mikrotik from './pages/Mikrotik'
 import Ubiquiti from './pages/Ubiquiti'
 import RouterDetail from './pages/RouterDetail'
+import Registros from './pages/Registros'
 import Placeholder from './pages/Placeholder'
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/mikrotik" element={<Mikrotik />} />
         <Route path="/mikrotik/:deviceId" element={<RouterDetail />} />
         <Route path="/ubiquiti" element={<Ubiquiti />} />
+        <Route path="/registros" element={<Registros />} />
         <Route
           path="/clientes"
           element={

@@ -12,6 +12,9 @@ const MODULOS = [
   { label: 'Red y Monitoreo', to: null },
   { label: 'MikroTik', to: '/mikrotik' },
   { label: 'Ubiquiti', to: '/ubiquiti' },
+  // La bitácora muestra la actividad de todos los operadores: se limita a
+  // quien administra la red, igual que en el backend.
+  { label: 'Bitácora', to: '/registros', roles: ['admin', 'soporte'] },
   { label: 'Reportes', to: null },
   { label: 'Inventario', to: null },
   { label: 'Soporte / Tickets', to: null },
@@ -46,7 +49,7 @@ export default function Layout({ children }) {
         </div>
 
         <nav className="nav">
-          {MODULOS.map((item) =>
+          {MODULOS.filter((item) => !item.roles || item.roles.includes(user?.role)).map((item) =>
             item.to ? (
               <NavLink
                 key={item.label}

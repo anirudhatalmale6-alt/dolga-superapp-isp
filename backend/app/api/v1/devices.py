@@ -6,7 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import build_client, get_current_user, get_device, require_roles
+from app.api.deps import (
+    audit_trail,
+    build_client,
+    get_current_user,
+    get_device,
+    require_roles,
+)
+from app.services.audit import AuditTrail
 from app.core.crypto import encrypt_secret
 from app.db.session import get_session
 from app.models.network import NetworkDevice
@@ -90,9 +97,12 @@ async def delete_device(
 async def test_connection(
     device: NetworkDevice = Depends(get_device),
     session: AsyncSession = Depends(get_session),
+    trail: AuditTrail = Depends(audit_trail),
     _: User = Depends(get_current_user),
 ) -> ConnectionTestResult:
-    client = build_client(device)
+    trail.target_id = device.id
+    trail.target_name = device.name
+    client = build_client(device, trail)
     try:
         info = await client.ping_check()
     except MikrotikError as exc:

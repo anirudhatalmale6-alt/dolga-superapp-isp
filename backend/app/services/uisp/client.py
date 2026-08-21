@@ -11,10 +11,13 @@ guarda cifrado en PostgreSQL y el navegador nunca lo ve.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
+
+from app.services.audit import Exchange
 
 from .exceptions import UispAuthError, UispConnectionError, UispRequestError
 
@@ -57,6 +60,7 @@ class UispClient:
         token: str,
         verify_tls: bool = False,
         timeout: float = 15.0,
+        on_exchange: Optional[Callable[[Exchange], None]] = None,
     ) -> None:
         # Muchas instalaciones de UISP usan certificado autofirmado; por eso
         # verify_tls es opcional y por defecto va apagado.
@@ -64,6 +68,10 @@ class UispClient:
         self.token = token
         self.verify_tls = verify_tls
         self.timeout = timeout
+        # Callback de bitácora: anota cada llamada real hacia UISP. Va aquí, en
+        # el transporte, y no en la capa de arriba, para que lo que quede
+        # registrado sea la URL que de verdad salió del servidor.
+        self.on_exchange = on_exchange
         self._client: Optional[httpx.AsyncClient] = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -88,26 +96,83 @@ class UispClient:
     async def __aexit__(self, *exc_info) -> None:
         await self.close()
 
-    async def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        url = path if path.startswith("/") else f"/{path}"
+    def _note(self, exchange: Exchange) -> None:
+        """Anota el intercambio si hay bitácora. Nunca interrumpe la llamada."""
+        if self.on_exchange is None:
+            return
         try:
-            response = await self._get_client().get(url, params=params)
+            self.on_exchange(exchange)
+        except Exception:  # pragma: no cover - defensivo
+            pass
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        writing: bool,
+    ) -> httpx.Response:
+        """Único punto por donde sale una petición hacia UISP.
+
+        Está centralizado a propósito: así la bitácora ve absolutamente todas
+        las llamadas, incluidas las que fallan, sin depender de que cada método
+        se acuerde de registrarse.
+        """
+        started = time.perf_counter()
+
+        def elapsed() -> int:
+            return int((time.perf_counter() - started) * 1000)
+
+        def anotar(*, ok: bool, http_status=None, rows=None, error=None) -> None:
+            self._note(
+                Exchange(
+                    target="uisp",
+                    request=f"{method.upper()} {self.base_url}{url}",
+                    ok=ok,
+                    duration_ms=elapsed(),
+                    http_status=http_status,
+                    rows=rows,
+                    error=error,
+                )
+            )
+
+        try:
+            response = await self._get_client().request(
+                method, url, params=params, json=json_body
+            )
         except httpx.ConnectError as exc:
+            anotar(ok=False, error=f"no se pudo conectar: {exc}")
             raise UispConnectionError(
                 f"No se pudo conectar a UISP en {self.base_url}: {exc}"
             ) from exc
         except httpx.TimeoutException as exc:
-            raise UispConnectionError(f"Timeout consultando {self.base_url}{url}") from exc
+            verbo = f"ejecutando {method}" if writing else "consultando"
+            anotar(ok=False, error=f"timeout tras {self.timeout} s")
+            raise UispConnectionError(f"Timeout {verbo} {self.base_url}{url}") from exc
         except httpx.HTTPError as exc:  # pragma: no cover - red
+            anotar(ok=False, error=str(exc))
             raise UispConnectionError(f"Error HTTP hacia {self.base_url}{url}: {exc}") from exc
 
         if response.status_code in (401, 403):
+            anotar(ok=False, http_status=response.status_code, error="App Key rechazada")
+            if writing:
+                raise UispAuthError(
+                    f"UISP rechazó la acción (HTTP {response.status_code}). La App Key "
+                    "necesita permiso de escritura para ejecutar acciones sobre equipos."
+                )
             raise UispAuthError(
                 "UISP rechazó el token (HTTP "
                 f"{response.status_code}). Verifica que la App Key siga activa y "
                 "tenga permiso de lectura."
             )
         if response.status_code == 404:
+            anotar(ok=False, http_status=404, error="ruta no encontrada en este UISP")
+            if writing:
+                raise UispRequestError(
+                    f"Esta versión de UISP no ofrece la acción {url}.", path=url, status_code=404
+                )
             raise UispRequestError(
                 f"UISP no conoce la ruta {url}. Puede que esta versión de UISP no "
                 "ofrezca ese recurso.",
@@ -122,12 +187,19 @@ class UispClient:
                     detail = body.get("message") or body.get("error") or ""
             except ValueError:
                 detail = response.text[:300]
+            anotar(ok=False, http_status=response.status_code, error=detail or None)
             raise UispRequestError(
                 detail or f"HTTP {response.status_code} en {url}",
                 path=url,
                 status_code=response.status_code,
             )
 
+        anotar(ok=True, http_status=response.status_code, rows=_count(response))
+        return response
+
+    async def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        url = path if path.startswith("/") else f"/{path}"
+        response = await self._send("GET", url, params=params, writing=False)
         if not response.content:
             return []
         try:
@@ -148,40 +220,7 @@ class UispClient:
         UISP no ofrece esa acción" en vez de fingir que se ejecutó.
         """
         url = path if path.startswith("/") else f"/{path}"
-        try:
-            response = await self._get_client().request(method, url, json=json_body)
-        except httpx.ConnectError as exc:
-            raise UispConnectionError(
-                f"No se pudo conectar a UISP en {self.base_url}: {exc}"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise UispConnectionError(f"Timeout ejecutando {method} {self.base_url}{url}") from exc
-        except httpx.HTTPError as exc:  # pragma: no cover - red
-            raise UispConnectionError(f"Error HTTP hacia {self.base_url}{url}: {exc}") from exc
-
-        if response.status_code in (401, 403):
-            raise UispAuthError(
-                f"UISP rechazó la acción (HTTP {response.status_code}). La App Key "
-                "necesita permiso de escritura para ejecutar acciones sobre equipos."
-            )
-        if response.status_code == 404:
-            raise UispRequestError(
-                f"Esta versión de UISP no ofrece la acción {url}.", path=url, status_code=404
-            )
-        if response.status_code >= 400:
-            detail = ""
-            try:
-                body = response.json()
-                if isinstance(body, dict):
-                    detail = body.get("message") or body.get("error") or ""
-            except ValueError:
-                detail = response.text[:300]
-            raise UispRequestError(
-                detail or f"HTTP {response.status_code} en {url}",
-                path=url,
-                status_code=response.status_code,
-            )
-
+        response = await self._send(method, url, json_body=json_body, writing=True)
         if not response.content:
             return {}
         try:
@@ -206,3 +245,24 @@ class UispClient:
         if isinstance(data, list):
             return [row for row in data if isinstance(row, dict)]
         return []
+
+
+def _count(response: httpx.Response) -> Optional[int]:
+    """Cuántos elementos trajo la respuesta, para dejarlo en la bitácora.
+
+    Es una cifra informativa: si el cuerpo no es una colección se anota None en
+    vez de inventar un 1, que se leería como "vino un equipo".
+    """
+    if not response.content:
+        return 0
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if isinstance(body, list):
+        return len(body)
+    if isinstance(body, dict):
+        for key in ("items", "data", "results"):
+            if isinstance(body.get(key), list):
+                return len(body[key])
+    return None

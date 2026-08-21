@@ -11,7 +11,9 @@ cae a la API binaria y se recuerda la elección para las siguientes llamadas.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from app.services.audit import Exchange
 
 from .binary_api import RouterOSBinaryClient
 from .exceptions import MikrotikAuthError, MikrotikConnectionError, MikrotikError
@@ -42,15 +44,19 @@ class MikrotikClient:
         api_use_tls: bool = False,
         verify_tls: bool = False,
         timeout: float = 8.0,
+        on_exchange: Optional[Callable[[Exchange], None]] = None,
     ) -> None:
         self.host = host
         self.mode = mode
         self._active_transport: Optional[str] = None if mode == AUTO else mode
+        # El mismo callback va a los dos transportes: en modo AUTO, un intento
+        # fallido por REST seguido de uno bueno por API binaria deja las dos
+        # líneas en la bitácora, que es exactamente lo que pasó.
         self._rest = RouterOSRestClient(
-            host, username, password, rest_port, rest_use_tls, verify_tls, timeout
+            host, username, password, rest_port, rest_use_tls, verify_tls, timeout, on_exchange
         )
         self._api = RouterOSBinaryClient(
-            host, username, password, api_port, api_use_tls, verify_tls, timeout
+            host, username, password, api_port, api_use_tls, verify_tls, timeout, on_exchange
         )
 
     @property

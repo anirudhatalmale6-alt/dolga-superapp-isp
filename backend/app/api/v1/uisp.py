@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import audit_trail, get_current_user, require_roles
 from app.core.config import settings
 from app.core.crypto import encrypt_secret
 from app.db.session import get_session
@@ -26,6 +26,7 @@ from app.schemas.uisp import (
     ControllerTestResult,
     ControllerUpdate,
 )
+from app.services.audit import AuditTrail
 from app.services.uisp.client import UispClient
 from app.services.uisp.exceptions import (
     UispAuthError,
@@ -59,8 +60,13 @@ async def get_controller(
 
 async def get_uisp_client(
     controller: UispController = Depends(get_controller),
+    trail: AuditTrail = Depends(audit_trail),
 ) -> AsyncGenerator[UispClient, None]:
-    client = build_uisp_client(controller)
+    # La bitácora se cuelga del transporte: registra la URL exacta que sale
+    # hacia UISP, no lo que la capa de arriba dice que pidió.
+    trail.target_id = controller.id
+    trail.target_name = controller.name
+    client = build_uisp_client(controller, trail)
     try:
         yield client
     finally:
@@ -159,8 +165,11 @@ async def delete_controller(
 async def test_connection(
     controller: UispController = Depends(get_controller),
     session: AsyncSession = Depends(get_session),
+    trail: AuditTrail = Depends(audit_trail),
 ) -> ControllerTestResult:
-    client = build_uisp_client(controller)
+    trail.target_id = controller.id
+    trail.target_name = controller.name
+    client = build_uisp_client(controller, trail)
     try:
         info = await UispService(client).ping_check()
     except UispError as exc:

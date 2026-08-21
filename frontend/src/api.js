@@ -63,6 +63,15 @@ export const api = {
   uispAction: (id, deviceId, action) =>
     request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}/${action}`, { method: 'POST' }),
 
+  // Bitácora de operaciones
+  auditOperations: (params = {}) => {
+    const query = new URLSearchParams(
+      Object.entries(params).filter(([, value]) => value !== null && value !== undefined && value !== ''),
+    ).toString()
+    return request(`/audit/operations${query ? `?${query}` : ''}`)
+  },
+  auditSummary: (hours = 24) => request(`/audit/summary?hours=${hours}`),
+
   fleet: () => request('/monitoring/fleet'),
   historyOf: (id, minutes = 60) =>
     request(`/monitoring/devices/${id}/history?minutes=${minutes}`),

@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     MONITOR_INTERVAL_SECONDS: int = 30
     MONITOR_RETENTION_HOURS: int = 72
 
+    # Bitácora de operaciones. Las consultas caducan rápido; las acciones
+    # (suspender, reiniciar, apagar) se guardan un año porque son las que
+    # alguien puede tener que justificar frente a un cliente.
+    AUDIT_READ_RETENTION_DAYS: int = 14
+    AUDIT_ACTION_RETENTION_DAYS: int = 365
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value):

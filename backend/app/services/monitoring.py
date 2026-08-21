@@ -25,6 +25,7 @@ from app.core.config import settings
 from app.core.crypto import DecryptionError, decrypt_secret
 from app.models.monitoring import DeviceSample
 from app.models.network import MikrotikApiMode, NetworkDevice
+from app.services.audit import purge_old_logs
 from app.services.mikrotik.client import MikrotikClient
 from app.services.mikrotik.exceptions import MikrotikError
 from app.services.mikrotik.service import MikrotikService
@@ -148,6 +149,16 @@ async def monitor_loop(session_factory: async_sessionmaker[AsyncSession]) -> Non
                 removed = await prune_old_samples(session_factory)
                 if removed:
                     logger.info("Monitoreo: %s muestras antiguas eliminadas", removed)
+                # La bitácora se poda en el mismo ciclo para no montar otro
+                # proceso de fondo solo para eso.
+                async with session_factory() as session:
+                    vencidas = await purge_old_logs(
+                        session,
+                        read_retention_days=settings.AUDIT_READ_RETENTION_DAYS,
+                        action_retention_days=settings.AUDIT_ACTION_RETENTION_DAYS,
+                    )
+                if vencidas:
+                    logger.info("Bitácora: %s registros vencidos eliminados", vencidas)
             logger.debug("Monitoreo: %s equipos muestreados", count)
         except asyncio.CancelledError:
             logger.info("Monitoreo detenido")
