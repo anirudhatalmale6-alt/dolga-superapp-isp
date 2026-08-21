@@ -60,6 +60,8 @@ export const api = {
   uispDevice: (id, deviceId) => request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}`),
   uispStatistics: (id, deviceId, interval = 'hour') =>
     request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}/statistics?interval=${interval}`),
+  uispAction: (id, deviceId, action) =>
+    request(`/uisp/${id}/devices/${encodeURIComponent(deviceId)}/${action}`, { method: 'POST' }),
 
   fleet: () => request('/monitoring/fleet'),
   historyOf: (id, minutes = 60) =>

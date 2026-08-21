@@ -267,6 +267,44 @@ async def test_invalid_base_url_is_rejected(ctx):
 
 
 @pytest.mark.asyncio
+async def test_device_actions_and_role_limits(ctx):
+    client, state, server, _ = ctx
+    admin = await _login(client, "admin@dolga.net", "Admin12345")
+    controller_id = await _register(client, admin, server.base_url)
+    base = f"/api/v1/uisp/{controller_id}/devices"
+    tech = await _login(client, "tecnico@dolga.net", "Tecnico12345")
+
+    # Localizar no interrumpe el servicio: lo puede hacer un técnico.
+    locate = await client.post(f"{base}/ap-1/locate", headers=tech)
+    assert locate.status_code == 200, locate.text
+    assert ("ap-1", "locate") in state.actions
+
+    # Reiniciar corta el enlace: el técnico no puede.
+    assert (await client.post(f"{base}/ap-1/reboot", headers=tech)).status_code == 403
+    # Actualizar firmware, solo el administrador.
+    assert (await client.post(f"{base}/ap-1/upgrade", headers=tech)).status_code == 403
+    assert [a for a in state.actions if a[1] in ("reboot", "upgrade")] == []
+
+    reboot = await client.post(f"{base}/ap-1/reboot", headers=admin)
+    assert reboot.status_code == 200
+    assert ("ap-1", "reboot") in state.actions
+
+
+@pytest.mark.asyncio
+async def test_action_missing_in_this_uisp_version_returns_422(ctx):
+    client, state, server, _ = ctx
+    headers = await _login(client, "admin@dolga.net", "Admin12345")
+    controller_id = await _register(client, headers, server.base_url)
+    state.supported_actions.discard("upgrade")
+
+    response = await client.post(
+        f"/api/v1/uisp/{controller_id}/devices/ap-1/upgrade", headers=headers
+    )
+    assert response.status_code == 422
+    assert "no ofrece la acción" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_controller_not_found(ctx):
     client, _, _, _ = ctx
     headers = await _login(client, "admin@dolga.net", "Admin12345")

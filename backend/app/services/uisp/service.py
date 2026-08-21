@@ -295,6 +295,43 @@ class UispService:
             "weak_signal_stations": sorted(débiles, key=lambda s: s["signal_dbm"])[:20],
         }
 
+    # ------------------------------------------------------------- acciones
+
+    # Lo que la API de UISP permite hacer sobre un equipo. La configuración de
+    # radio (frecuencia, potencia, ancho de canal, SSID) NO está aquí: eso vive
+    # en airOS, dentro de la antena, y UISP no lo expone por API. Si el cliente
+    # lo necesita hay que hablar con airOS directamente, y es otro trabajo.
+    ACTIONS = {
+        "reboot": ("POST", "/devices/{id}/system/reboot", "Reinicio enviado al equipo."),
+        "locate": (
+            "POST",
+            "/devices/{id}/locate",
+            "El equipo empezará a parpadear sus LED para poder ubicarlo en la torre.",
+        ),
+        "upgrade": (
+            "POST",
+            "/devices/{id}/system/upgrade",
+            "Actualización de firmware enviada. El equipo se reinicia al terminar.",
+        ),
+    }
+
+    async def action(self, device_id: str, action: str) -> Dict[str, Any]:
+        if action not in self.ACTIONS:
+            raise ValueError(f"Acción desconocida para un equipo Ubiquiti: {action}")
+        method, template, message = self.ACTIONS[action]
+        await self.client.request(method, template.format(id=device_id))
+        return {"device_id": device_id, "action": action, "ok": True, "message": message}
+
+    async def reboot(self, device_id: str) -> Dict[str, Any]:
+        return await self.action(device_id, "reboot")
+
+    async def locate(self, device_id: str) -> Dict[str, Any]:
+        """Hace parpadear los LED del equipo para encontrarlo físicamente."""
+        return await self.action(device_id, "locate")
+
+    async def upgrade(self, device_id: str) -> Dict[str, Any]:
+        return await self.action(device_id, "upgrade")
+
     async def ping_check(self) -> Dict[str, Any]:
         """Prueba de conexión: confirma que la URL y el token sirven."""
         sites = await self.client.get_list("/sites")

@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 from app.services.uisp.client import UispClient, normalize_base_url
-from app.services.uisp.exceptions import UispAuthError, UispConnectionError
+from app.services.uisp.exceptions import UispAuthError, UispConnectionError, UispRequestError
 from app.services.uisp.service import UispService, signal_quality
 from tests.fake_uisp import FakeUispServer, FakeUispState
 
@@ -236,6 +236,57 @@ async def test_ping_check(uisp):
     assert info["sites"] == 2
     assert info["devices"] == 10
     assert info["base_url"].endswith("/nms/api/v2.1")
+
+
+# -------------------------------------------------------------------- acciones
+
+
+@pytest.mark.asyncio
+async def test_reboot_and_locate_reach_uisp(uisp):
+    svc, state, _ = uisp
+
+    result = await svc.reboot("ap-1")
+    assert result["ok"] is True
+    assert ("ap-1", "reboot") in state.actions
+
+    result = await svc.locate("st-11")
+    assert "parpadear" in result["message"]
+    assert ("st-11", "locate") in state.actions
+
+
+@pytest.mark.asyncio
+async def test_upgrade(uisp):
+    svc, state, _ = uisp
+    await svc.upgrade("ap-2")
+    assert ("ap-2", "upgrade") in state.actions
+
+
+@pytest.mark.asyncio
+async def test_unknown_action_is_rejected_before_touching_uisp(uisp):
+    svc, state, _ = uisp
+    with pytest.raises(ValueError):
+        await svc.action("ap-1", "formatear")
+    assert state.actions == []
+
+
+@pytest.mark.asyncio
+async def test_action_unsupported_by_this_uisp_version_is_reported(uisp):
+    """Si la instalación no ofrece la acción se dice claro, no se finge éxito."""
+    svc, state, _ = uisp
+    state.supported_actions.discard("locate")
+
+    with pytest.raises(UispRequestError) as exc:
+        await svc.locate("ap-1")
+    assert "no ofrece la acción" in str(exc.value)
+    assert state.actions == []
+
+
+@pytest.mark.asyncio
+async def test_action_on_unknown_device_does_not_silently_pass(uisp):
+    svc, state, _ = uisp
+    with pytest.raises(UispRequestError):
+        await svc.reboot("no-existe")
+    assert state.actions == []
 
 
 # ---------------------------------------------------------------------- errores

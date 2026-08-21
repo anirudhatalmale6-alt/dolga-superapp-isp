@@ -227,6 +227,40 @@ async def device_interfaces(
     return await _guard(svc.interfaces(device_id))
 
 
+# -------------------------------------------------------------------- acciones
+
+
+@router.post(
+    "/{controller_id}/devices/{device_id}/reboot",
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SOPORTE))],
+    summary="Reiniciar una antena o equipo Ubiquiti",
+)
+async def reboot_device(device_id: str, svc: UispService = Depends(_svc)):
+    return await _guard(svc.reboot(device_id))
+
+
+@router.post(
+    "/{controller_id}/devices/{device_id}/locate",
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SOPORTE, UserRole.TECNICO))],
+    summary="Hacer parpadear los LED del equipo para ubicarlo en la torre",
+    description=(
+        "Útil cuando el técnico está subido en la torre y hay seis antenas "
+        "iguales. Es una acción sin riesgo: no interrumpe el servicio."
+    ),
+)
+async def locate_device(device_id: str, svc: UispService = Depends(_svc)):
+    return await _guard(svc.locate(device_id))
+
+
+@router.post(
+    "/{controller_id}/devices/{device_id}/upgrade",
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+    summary="Actualizar el firmware del equipo (lo reinicia al terminar)",
+)
+async def upgrade_device(device_id: str, svc: UispService = Depends(_svc)):
+    return await _guard(svc.upgrade(device_id))
+
+
 @router.get(
     "/{controller_id}/devices/{device_id}/statistics",
     summary="Histórico que ya guarda UISP (señal, CPU, tráfico)",

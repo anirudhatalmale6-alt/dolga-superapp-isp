@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
+import { useAuth } from '../auth'
 import { formatUptime } from '../components/Stat'
 
 const REFRESH_MS = 20000
 
 export default function Ubiquiti() {
+  const { user } = useAuth()
   const [controllers, setControllers] = useState(null)
   const [controllerId, setControllerId] = useState(null)
   const [overview, setOverview] = useState(null)
@@ -12,6 +14,8 @@ export default function Ubiquiti() {
   const [selected, setSelected] = useState(null)
   const [stations, setStations] = useState(null)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const [busy, setBusy] = useState(null)
 
   useEffect(() => {
     api
@@ -54,6 +58,24 @@ export default function Ubiquiti() {
     }
   }
 
+  async function runAction(device, action, confirmText) {
+    if (confirmText && !window.confirm(confirmText)) return
+    setBusy(`${device.id}:${action}`)
+    setError(null)
+    try {
+      const result = await api.uispAction(controllerId, device.id, action)
+      setNotice(`${device.name}: ${result.message}`)
+    } catch (err) {
+      // Si esta versión de UISP no ofrece la acción, el mensaje lo dice.
+      setError(`${device.name}: ${err.message}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const puedeReiniciar = user?.role === 'admin' || user?.role === 'soporte'
+  const puedeActualizar = user?.role === 'admin'
+
   if (controllers && controllers.length === 0) {
     return (
       <>
@@ -90,6 +112,14 @@ export default function Ubiquiti() {
       </div>
 
       {error && <div className="alert error" style={{ marginBottom: 14 }}>{error}</div>}
+      {notice && (
+        <div className="alert ok" style={{ marginBottom: 14 }}>
+          {notice}{' '}
+          <button className="btn ghost small" style={{ marginLeft: 8 }} onClick={() => setNotice(null)}>
+            ok
+          </button>
+        </div>
+      )}
 
       {overview?.weak_signal_count > 0 && (
         <div className="alert info" style={{ marginBottom: 14 }}>
@@ -122,7 +152,7 @@ export default function Ubiquiti() {
                     <th className="num tight">Señal media</th>
                     <th className="num tight">Peor señal</th>
                     <th className="num tight">Frecuencia</th>
-                    <th className="tight" />
+                    <th className="tight">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -168,10 +198,14 @@ export default function Ubiquiti() {
                       <td className="num dim tight nowrap">
                         {sector.frequency_mhz ? `${sector.frequency_mhz} MHz` : 'n/d'}
                       </td>
-                      <td className="tight chevron">
-                        <a onClick={(e) => e.preventDefault()} href="#ver">
-                          ›
-                        </a>
+                      <td className="tight" onClick={(e) => e.stopPropagation()}>
+                        <DeviceActions
+                          device={sector}
+                          busy={busy}
+                          puedeReiniciar={puedeReiniciar}
+                          puedeActualizar={puedeActualizar}
+                          onAction={runAction}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -206,6 +240,7 @@ export default function Ubiquiti() {
                   <th className="num">Distancia</th>
                   <th className="num">Conectado</th>
                   <th>Estado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -236,6 +271,15 @@ export default function Ubiquiti() {
                           desconectado
                         </span>
                       )}
+                    </td>
+                    <td>
+                      <DeviceActions
+                        device={station}
+                        busy={busy}
+                        puedeReiniciar={puedeReiniciar}
+                        puedeActualizar={puedeActualizar}
+                        onAction={runAction}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -280,6 +324,59 @@ export default function Ubiquiti() {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * Acciones que la API de UISP permite sobre un equipo.
+ *
+ * Localizar es inofensivo (solo parpadea los LED) y por eso lo puede usar
+ * cualquier rol. Reiniciar corta el servicio de ese enlace, así que va con
+ * confirmación. Actualizar firmware queda solo para el administrador.
+ */
+function DeviceActions({ device, busy, puedeReiniciar, puedeActualizar, onAction }) {
+  const trabajando = (action) => busy === `${device.id}:${action}`
+  return (
+    <div className="btn-row">
+      <button
+        className="btn small ghost"
+        disabled={!device.online || trabajando('locate')}
+        title={device.online ? 'Parpadea los LED para ubicarlo en la torre' : 'El equipo no responde'}
+        onClick={() => onAction(device, 'locate')}
+      >
+        {trabajando('locate') ? '…' : 'Localizar'}
+      </button>
+      {puedeReiniciar && (
+        <button
+          className="btn small warnish"
+          disabled={!device.online || trabajando('reboot')}
+          onClick={() =>
+            onAction(
+              device,
+              'reboot',
+              `¿Reiniciar "${device.name}"? El enlace se cae mientras el equipo arranca.`,
+            )
+          }
+        >
+          {trabajando('reboot') ? '…' : 'Reiniciar'}
+        </button>
+      )}
+      {puedeActualizar && (
+        <button
+          className="btn small"
+          disabled={!device.online || trabajando('upgrade')}
+          onClick={() =>
+            onAction(
+              device,
+              'upgrade',
+              `¿Actualizar el firmware de "${device.name}"? El equipo se reinicia al terminar.`,
+            )
+          }
+        >
+          {trabajando('upgrade') ? '…' : 'Firmware'}
+        </button>
+      )}
+    </div>
   )
 }
 

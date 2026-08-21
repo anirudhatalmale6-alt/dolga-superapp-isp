@@ -137,6 +137,61 @@ class UispClient:
                 f"UISP devolvió una respuesta que no es JSON en {url}", path=url
             ) from exc
 
+    async def request(
+        self, method: str, path: str, json_body: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """POST / PUT / PATCH / DELETE contra UISP.
+
+        Las acciones de escritura varían bastante entre versiones de UISP. Si
+        una instalación no ofrece un endpoint, UISP responde 404 y aquí sale un
+        `UispRequestError` con ese mensaje: la plataforma dice "esta versión de
+        UISP no ofrece esa acción" en vez de fingir que se ejecutó.
+        """
+        url = path if path.startswith("/") else f"/{path}"
+        try:
+            response = await self._get_client().request(method, url, json=json_body)
+        except httpx.ConnectError as exc:
+            raise UispConnectionError(
+                f"No se pudo conectar a UISP en {self.base_url}: {exc}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise UispConnectionError(f"Timeout ejecutando {method} {self.base_url}{url}") from exc
+        except httpx.HTTPError as exc:  # pragma: no cover - red
+            raise UispConnectionError(f"Error HTTP hacia {self.base_url}{url}: {exc}") from exc
+
+        if response.status_code in (401, 403):
+            raise UispAuthError(
+                f"UISP rechazó la acción (HTTP {response.status_code}). La App Key "
+                "necesita permiso de escritura para ejecutar acciones sobre equipos."
+            )
+        if response.status_code == 404:
+            raise UispRequestError(
+                f"Esta versión de UISP no ofrece la acción {url}.", path=url, status_code=404
+            )
+        if response.status_code >= 400:
+            detail = ""
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    detail = body.get("message") or body.get("error") or ""
+            except ValueError:
+                detail = response.text[:300]
+            raise UispRequestError(
+                detail or f"HTTP {response.status_code} en {url}",
+                path=url,
+                status_code=response.status_code,
+            )
+
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
+    async def post(self, path: str, json_body: Optional[Dict[str, Any]] = None) -> Any:
+        return await self.request("POST", path, json_body)
+
     async def get_list(self, path: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Como `get`, pero garantiza una lista de diccionarios.
 

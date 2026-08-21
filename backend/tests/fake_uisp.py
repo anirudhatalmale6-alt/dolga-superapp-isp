@@ -186,6 +186,10 @@ class FakeUispState:
         self.statistics = copy.deepcopy(STATISTICS)
         self.calls: List[str] = []
         self.statistics_supported = True
+        # Acciones ejecutadas: [(device_id, accion), ...]
+        self.actions: List[tuple] = []
+        # Algunas versiones de UISP no ofrecen todas las acciones.
+        self.supported_actions = {"reboot", "locate", "upgrade"}
 
 
 def _free_port() -> int:
@@ -235,6 +239,34 @@ def build_uisp_app(state: FakeUispState) -> FastAPI:
         if not state.statistics_supported:
             return JSONResponse({"message": "Not found"}, status_code=404)
         return JSONResponse(state.statistics)
+
+    def _known_device(device_id: str) -> bool:
+        return any((d.get("identification") or {}).get("id") == device_id for d in state.devices)
+
+    @app.post(f"{prefix}/devices/{{device_id}}/system/reboot")
+    async def reboot(device_id: str):
+        if "reboot" not in state.supported_actions:
+            return JSONResponse({"message": "Not found"}, status_code=404)
+        if not _known_device(device_id):
+            return JSONResponse({"message": "Device not found"}, status_code=404)
+        state.actions.append((device_id, "reboot"))
+        return JSONResponse({}, status_code=200)
+
+    @app.post(f"{prefix}/devices/{{device_id}}/locate")
+    async def locate(device_id: str):
+        if "locate" not in state.supported_actions:
+            return JSONResponse({"message": "Not found"}, status_code=404)
+        if not _known_device(device_id):
+            return JSONResponse({"message": "Device not found"}, status_code=404)
+        state.actions.append((device_id, "locate"))
+        return JSONResponse({}, status_code=200)
+
+    @app.post(f"{prefix}/devices/{{device_id}}/system/upgrade")
+    async def upgrade(device_id: str):
+        if "upgrade" not in state.supported_actions:
+            return JSONResponse({"message": "Not found"}, status_code=404)
+        state.actions.append((device_id, "upgrade"))
+        return JSONResponse({}, status_code=200)
 
     return app
 
